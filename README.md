@@ -1,5 +1,7 @@
 # CarrierSelector
 
+[![Tests](https://github.com/carrierselector/CarrierSelector/actions/workflows/tests.yml/badge.svg)](https://github.com/carrierselector/CarrierSelector/actions/workflows/tests.yml)
+
 Профиль оператора от Apple — на нужную SIM iPhone, за одну перезагрузку.
 По USB, без джейлбрейка, профили Apple ставятся без изменений.
 Профиль, встроенный в iOS, всегда можно вернуть.
