@@ -233,7 +233,7 @@ class CarrierCatalogTests(unittest.TestCase):
                     carrier_app._remove_prepared_dir(bad)
 
     def test_windows_folders_get_no_owner_only_acl(self):
-        # Lenovo-PC, WinError 5: Python 3.13+ turns mode=0o700 into an owner-only ACL on Windows.
+        # WinError 5 (user report): Python 3.13+ turns mode=0o700 into an owner-only ACL on Windows.
         from tools import build_selector_ipcc
         calls = []
         x, y = Path("x"), Path("y")   # created before os.name is faked (pathlib checks it on Linux)
