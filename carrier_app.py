@@ -37,7 +37,7 @@ from tools.read_phone_carrier_state import read_states
 
 
 PROFILE_PAGE = 15
-APP_VERSION = "6.2"
+APP_VERSION = "6.3"
 
 # Waiting limits (seconds).  Module-level so the offline test-suite can shorten them.
 POLL_INTERVAL = 3

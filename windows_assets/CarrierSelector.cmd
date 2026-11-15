@@ -1,7 +1,7 @@
 @echo off
 setlocal
 chcp 65001 >nul
-title CarrierSelector v.6.2
+title CarrierSelector v.6.3
 
 set "PYTHONUTF8=1"
 set "PYTHONIOENCODING=utf-8"
