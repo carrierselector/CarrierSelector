@@ -1,0 +1,143 @@
+name: Build
+
+# Manual run: builds and tests all four archives and keeps them as workflow
+# artifacts (nothing is published).  Tag vX.Y: the same, then a GitHub release
+# with the archives, SHA256 and build provenance attestations.
+
+on:
+  workflow_dispatch:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: ${{ matrix.label }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { label: "macOS Apple Silicon", os: macos-15, kind: mac, arch: arm64, readme: mac_assets/README-Apple-Silicon.txt }
+          - { label: "macOS Intel", os: macos-15-intel, kind: mac, arch: x86_64, readme: mac_assets/README-Intel.txt }
+          - { label: "Linux x64", os: ubuntu-22.04, kind: linux }
+          - { label: "Windows x64", os: windows-latest, kind: windows }
+    env:
+      PYTHONUTF8: "1"
+      PYTHONPATH: ${{ github.workspace }}
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.14"
+
+      - name: Cache Apple carrier catalog
+        uses: actions/cache@v4
+        with:
+          path: embedded_catalog
+          key: catalog-${{ hashFiles('tools/fetch_catalog.py') }}
+
+      - name: Install dependencies
+        run: python -m pip install -r python_assets/requirements.txt pyinstaller==6.22.3
+
+      - name: Download catalog
+        run: python tools/fetch_catalog.py
+
+      - name: Version must match the tag
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: |
+          version=$(python -c "import sys; sys.path.insert(0, 'tools'); import package_release; print(package_release.app_version())")
+          test "v$version" = "${GITHUB_REF_NAME}" || { echo "tag ${GITHUB_REF_NAME} != APP_VERSION $version"; exit 1; }
+
+      - name: Tests
+        run: python -m unittest discover -s tests
+
+      - name: Build binary (macOS, Linux)
+        if: matrix.kind != 'windows'
+        env:
+          CARRIER_SELECTOR_TARGET_ARCH: ${{ matrix.arch }}
+        run: python -m PyInstaller --noconfirm --clean --distpath dist --workpath build CarrierSelector.spec
+
+      - name: Build Windows runtime
+        if: matrix.kind == 'windows'
+        run: python tools/build_windows_runtime.py build/runtime
+
+      - name: Package
+        id: package
+        run: |
+          if [ "${{ matrix.kind }}" = mac ]; then
+            archive=$(python tools/package_release.py mac --label "${{ matrix.label }}" --readme "${{ matrix.readme }}" --binary dist/CarrierSelector --out out)
+          elif [ "${{ matrix.kind }}" = linux ]; then
+            archive=$(python tools/package_release.py linux --binary dist/CarrierSelector --out out)
+          else
+            archive=$(python tools/package_release.py windows --runtime build/runtime --out out)
+          fi
+          echo "archive=$archive" >> "$GITHUB_OUTPUT"
+          ls -la out
+
+      - name: Smoke test of the packaged program (no iPhone)
+        run: |
+          unset PYTHONPATH
+          rm -rf smoke && mkdir smoke && cd smoke
+          unzip -q "../${{ steps.package.outputs.archive }}"
+          cd CarrierSelector*
+          ${{ matrix.kind == 'windows' && 'sha256sum -c SHA256.txt' || 'shasum -a 256 -c SHA256.txt' }}
+          if [ "${{ matrix.kind }}" = windows ]; then
+            printf '6\r\n\r\n5\r\n\r\n0\r\n\r\n' > ../input.txt
+            cmd //c "CarrierSelector.cmd < ..\\input.txt" > ../run.txt 2>&1 || true
+          else
+            printf '6\n\n5\n\n0\n' | ./CarrierSelector > ../run.txt 2>&1 || true
+          fi
+          cat ../run.txt | tail -20
+          grep -q "Беларусь — life" ../run.txt
+          grep -q "Проверено профилей: .*все подписи Apple в порядке" ../run.txt
+          grep -q "3. Вернуть профиль, встроенный в iOS" ../run.txt
+          if grep -q "Traceback" ../run.txt; then echo "Traceback in output"; exit 1; fi
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.label }}
+          path: ${{ steps.package.outputs.archive }}
+          compression-level: 0
+          retention-days: 7
+
+  release:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      id-token: write
+      attestations: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          path: out
+          merge-multiple: true
+
+      - name: Checksums
+        run: |
+          cd out
+          version="${GITHUB_REF_NAME#v}"
+          sha256sum CarrierSelector-*.zip > "CarrierSelector-v${version}-SHA256.txt"
+          cat "CarrierSelector-v${version}-SHA256.txt"
+
+      - uses: actions/attest-build-provenance@v2
+        with:
+          subject-path: out/CarrierSelector-*.zip
+
+      - name: Publish release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          notes="release-notes/${GITHUB_REF_NAME}.md"
+          test -f "$notes" || { echo "missing $notes"; exit 1; }
+          gh release create "${GITHUB_REF_NAME}" out/* --title "CarrierSelector ${GITHUB_REF_NAME#v}" --notes-file "$notes" --latest
