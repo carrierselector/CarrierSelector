@@ -1,0 +1,2 @@
+#!/bin/sh
+exec /usr/bin/arch -arm64 /usr/bin/install_name_tool "$@"

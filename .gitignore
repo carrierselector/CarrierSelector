@@ -1,0 +1,30 @@
+# Apple carrier bundles: downloaded by tools/fetch_catalog.py, never committed
+/embedded_catalog/
+
+# Builds and packaging
+/build*/
+/dist*/
+/release/
+*.zip
+*.7z
+*.ipcc
+
+# Runtime data and diagnostics (may contain device information)
+/logs/
+logs/
+*.log
+*.logarchive
+phone-state-*.json
+
+# Python and local environments
+__pycache__/
+*.pyc
+.venv/
+.runtime*/
+.pyinstaller-cache*/
+
+# OS junk
+.DS_Store
+._*
+Thumbs.db
+desktop.ini
