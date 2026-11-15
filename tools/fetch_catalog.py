@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import hashlib
 import shutil
+import ssl
 import sys
 import tempfile
 import urllib.request
@@ -32,9 +33,20 @@ ROOT = Path(__file__).resolve().parent.parent
 TARGET = ROOT / "embedded_catalog"
 
 
+def tls_context() -> ssl.SSLContext:
+    # python.org builds for macOS ship without root certificates; certifi comes
+    # with the dependencies (requests/pymobiledevice3), so prefer it.
+    try:
+        import certifi
+    except ImportError:
+        return ssl.create_default_context()
+    return ssl.create_default_context(cafile=certifi.where())
+
+
 def download(url: str, destination: Path) -> str:
     digest = hashlib.sha256()
-    with urllib.request.urlopen(url, timeout=120) as response, destination.open("wb") as handle:
+    with urllib.request.urlopen(url, timeout=120, context=tls_context()) as response, \
+            destination.open("wb") as handle:
         while chunk := response.read(1 << 20):
             digest.update(chunk)
             handle.write(chunk)
