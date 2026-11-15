@@ -60,7 +60,8 @@ def copytree(src: Path, dst: Path) -> None:
 
 def write_sums(folder: Path, names: list[str]) -> None:
     lines = [f"{sha256(folder / name)}  {name}" for name in names]
-    (folder / "SHA256.txt").write_text("\n".join(lines) + "\n", encoding="utf-8")
+    # newline="\n": on Windows text mode would write \r\n and break `sha256sum -c`.
+    (folder / "SHA256.txt").write_text("\n".join(lines) + "\n", encoding="utf-8", newline="\n")
 
 
 def zip_folder(folder: Path, archive: Path) -> None:
