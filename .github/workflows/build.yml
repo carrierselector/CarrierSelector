@@ -89,8 +89,7 @@ jobs:
           cd CarrierSelector*
           ${{ matrix.kind == 'windows' && 'sha256sum -c SHA256.txt' || 'shasum -a 256 -c SHA256.txt' }}
           if [ "${{ matrix.kind }}" = windows ]; then
-            printf '6\r\n\r\n5\r\n\r\n0\r\n\r\n' > ../input.txt
-            cmd //c "CarrierSelector.cmd < ..\\input.txt" > ../run.txt 2>&1 || true
+            printf '6\r\n\r\n5\r\n\r\n0\r\n\r\n' | cmd //c CarrierSelector.cmd > ../run.txt 2>&1 || true
           else
             printf '6\n\n5\n\n0\n' | ./CarrierSelector > ../run.txt 2>&1 || true
           fi
