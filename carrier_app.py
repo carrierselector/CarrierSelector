@@ -37,7 +37,7 @@ from tools.read_phone_carrier_state import read_states
 
 
 PROFILE_PAGE = 15
-APP_VERSION = "6.3"
+APP_VERSION = "6.4"
 
 # Waiting limits (seconds).  Module-level so the offline test-suite can shorten them.
 POLL_INTERVAL = 3
@@ -517,7 +517,18 @@ def offered_profiles(profiles: list[dict[str, object]]) -> list[dict[str, object
     for (identifier, version), profile in tested.items():
         if str(best[identifier].get("version", "")) != version:
             rows.append(profile)
-    return sorted(rows, key=lambda row: (str(row["label"]).casefold(), str(row.get("key", ""))))
+    return sorted(rows, key=_offer_sort_key)
+
+
+def _offer_sort_key(row: dict[str, object]) -> tuple[str, tuple[int, ...], str]:
+    """Operators by name; within one operator the newest version first
+    (Telia_dk 73.0, 68.0, 62.0), so the list reads top-down from new to old."""
+    name = str(row.get("identifier", "")).removeprefix("com.apple.").casefold()
+    try:
+        version = tuple(-part for part in version_tuple(row.get("version")))
+    except BuildError:
+        version = ()
+    return name, version, str(row.get("key", ""))
 
 
 def refuse_downgrade_over_own_package(state: dict[str, object], identifier: object,
@@ -1119,33 +1130,243 @@ def is_active_row(row: dict[str, object], line: dict[str, object]) -> bool:
 
 
 def is_mts_russia(line: dict[str, object]) -> bool:
-    return str(line.get("mcc", "")) == "250" and str(line.get("mnc", "")).zfill(2) == "01"
+    return operator_name(line) == "МТС"
 
 
 def mts_telia_hint(offered: list[dict[str, object]], line: dict[str, object], query: str) -> str:
     """MTS (250-01) accepts Wi-Fi calling only with AES-128/SHA2-256/DH14 or
-    AES-256/SHA1/DH14.  Telia_dk has that only up to 68.0, which exists just for
-    iPhone 14-17, 16e, 17e and Air.  Searching for Telia on another model must
+    AES-256/SHA1/DH14.  Telia_dk has that only up to 68.0 (iPhone 12-17, 16e,
+    17e, Air; not iPhone 18 / Duo).  Searching for Telia on another model must
     not end with a profile that cannot give MTS Wi-Fi calling."""
     if "telia" not in query.casefold() or not is_mts_russia(line):
         return ""
-    if any(str(row.get("identifier")) == "com.apple.Telia_dk" and str(row.get("version")) == "68.0"
-           for row in offered):
+    if any(str(row.get("identifier")) == "com.apple.Telia_dk"
+           and str(row.get("version")) in {"68.0", "62.0"} for row in offered):
         return ""
     text = ("  Telia_dk 68.0 для этой модели нет. В Telia_dk 69–73 другие шифры звонков по Wi-Fi —"
             " шлюз МТС их не принимает.")
-    if any(str(row.get("identifier")) == "com.apple.Vodafone_ro" for row in offered):
-        text += ("\n  Для звонков по Wi-Fi на МТС подойдёт Vodafone_ro 73.0"
-                 " (конференции в нём идут через сервер Румынии).")
+    alternatives = []
+    for name in ("Vodafone_tr", "Vodafone_ro"):
+        rows = sorted((row for row in offered if str(row.get("identifier")) == f"com.apple.{name}"),
+                      key=_offer_sort_key)
+        if rows:
+            alternatives.append(f"{name} {rows[0].get('version')}")
+    if alternatives:
+        text += ("\n  Для звонков по Wi-Fi на МТС подойдёт " + " или ".join(alternatives)
+                 + " (имя от сети, но конференции в них идут через сервер Турции или Румынии).")
     return text
+
+
+# Operators by MCC/MNC of the SIM (the same codes the phone reports for a line).
+OPERATORS = {
+    ("250", "01"): "МТС", ("250", "99"): "Билайн", ("250", "02"): "МегаФон",
+    ("250", "20"): "T2", ("250", "11"): "Yota",
+    ("257", "02"): "МТС BY", ("257", "01"): "A1", ("257", "04"): "life:)",
+}
+
+# Profiles that suit each operator (results of device tests, firmware analysis
+# and forum reports, November 2026).  version None = the newest offered version.
+# They head the profile list with a short note; there is no "main"/"backup"
+# label on purpose — the user picks by the notes.
+RECOMMENDED: dict[str, tuple[tuple[str, str | None, str], ...]] = {
+    "МТС": (
+        ("Vodafone_tr", None,
+         "имя от сети, SMS по Wi-Fi, USSD через IMS, Wi-Fi-звонки и в роуминге; конференции через Турцию"),
+        ("Telia_dk", "68.0",
+         "конференции через МТС; надпись «Norlys», SMS в авиарежиме не работают, нет роуминга"),
+        ("Telia_dk", "62.0", "как 68.0, но надпись «TELIA»"),
+        ("Vodafone_ro", None,
+         "имя от сети, SMS по Wi-Fi; конференции через Румынию, нет роуминга и USSD через IMS"),
+    ),
+    "Билайн": (
+        ("Ufone_pk", None, "SMS в LTE и USSD через IMS, SMS по Wi-Fi, правка APN; без HD-голоса EVS"),
+        ("MTN_cy", "73.0", "HD-голос EVS, SMS по Wi-Fi; SMS в LTE и USSD не через IMS, нет переключателя VoLTE"),
+        ("movistar_cr", None, "HD-голос EVS, SMS в LTE и USSD через IMS; APN не правится, не проверен"),
+        ("Ncell_np", None, "HD-голос EVS, SMS в LTE и USSD через IMS; APN «web» не правится"),
+    ),
+    "МегаФон": (
+        ("Ufone_pk", None, "USSD через IMS, правка APN; без HD-голоса EVS, отзывов с МегаФона пока нет"),
+        ("MTN_cy", "73.0", "HD-голос EVS; много отзывов"),
+        ("Ncell_np", None, "HD-голос EVS, USSD через IMS; APN «web» не правится"),
+    ),
+    "T2": (
+        ("MTN_cy", "73.0", "5G и VoLTE по отзывам"),
+        ("Ufone_pk", None, "не проверялся; должен работать как MTN_cy"),
+    ),
+    "Yota": (
+        ("MTN_cy", "73.0", "отзывов пока мало"),
+        ("Ufone_pk", None, "не проверялся; должен работать как MTN_cy"),
+    ),
+    "МТС BY": (("Telia_dk", "73.0", "5G, VoLTE и HD-голос EVS, конференции через МТС BY"),),
+    "life:)": (("MTS_ua", "73.0", "5G; VoLTE у life официально не запущен"),),
+}
+
+
+def operator_name(line: dict[str, object]) -> str | None:
+    mcc = str(line.get("mcc", "")).strip()
+    mnc = str(line.get("mnc", "")).strip()
+    if mnc.isdigit():
+        mnc = f"{int(mnc):02d}"  # "1", "01" and "001" are the same network
+    return OPERATORS.get((mcc, mnc))
+
+
+def recommended_rows(offered: list[dict[str, object]],
+                     line: dict[str, object]) -> list[tuple[dict[str, object], str]]:
+    """(row, note) for the SIM's operator; only profiles that are offered for
+    this iPhone (with settings for its board)."""
+    result: list[tuple[dict[str, object], str]] = []
+    for name, version, note in RECOMMENDED.get(operator_name(line) or "", ()):
+        identifier = f"com.apple.{name}"
+        # Only variants with this board's modem file (.der.pri): those are the
+        # ones checked with 5G on real phones.  E.g. Ufone_pk on iPhone 16e/17e/
+        # Air/18 has a board override without the modem file — still offered,
+        # but not recommended until 5G is confirmed there.
+        rows = [row for row in offered if str(row.get("identifier")) == identifier
+                and (version is None or str(row.get("version")) == version)
+                and int(row.get("compatibility_score", 0)) >= 400
+                and (name in WITHOUT_MODEM_FILE or has_modem_file(row, line))]
+        if not rows:
+            continue
+        rows.sort(key=_offer_sort_key)
+        chosen = rows[0]
+        if all(chosen is not item for item, _ in result):
+            result.append((chosen, note))
+    return result
+
+
+# Recommended although no board has a modem file: MTS_ua gives 5G on life:)
+# and MegaFon by user reports.
+WITHOUT_MODEM_FILE = {"MTS_ua"}
+
+
+# IKE proposals the MTS ePDG (213.87.142.77) accepts: probed IKE_SA_INIT on
+# 2026-11-17 — everything else (iOS defaults, AES-256/SHA2, GCM, other DH
+# groups or PRF) gets NO_PROPOSAL_CHOSEN.  (encryption, integrity, PRF, DH)
+MTS_IKE_PROPOSALS = {("AES-128", "SHA2-256", "SHA2-256", 14), ("AES-256", "SHA1-96", "SHA1-160", 14)}
+
+
+def _merge(base: object, update: object) -> object:
+    if isinstance(base, dict) and isinstance(update, dict):
+        merged = dict(base)
+        for key, value in update.items():
+            merged[key] = _merge(base.get(key), value) if key in base else value
+        return merged
+    return update
+
+
+@functools.lru_cache(maxsize=None)
+def bundle_settings(path: str, board: str) -> dict[str, object]:
+    """carrier.plist merged with the override for this board (as iOS applies it)."""
+    directory = bundle_path(path)
+    try:
+        settings = plistlib.loads((directory / "carrier.plist").read_bytes())
+    except (OSError, plistlib.InvalidFileException):
+        return {}
+    if not isinstance(settings, dict):
+        return {}
+    for override in sorted(directory.glob("overrides_*.plist")):
+        boards = {item.casefold() for item in override.stem.removeprefix("overrides_").split("_")}
+        if board.casefold() in boards:
+            try:
+                settings = _merge(settings, plistlib.loads(override.read_bytes()))
+            except (OSError, plistlib.InvalidFileException):
+                pass
+            break
+    return settings if isinstance(settings, dict) else {}
+
+
+def _get(document: object, *path: str) -> object:
+    for key in path:
+        if not isinstance(document, dict):
+            return None
+        document = document.get(key)
+    return document
+
+
+def mts_wifi_calling(profile: dict[str, object], line: dict[str, object]) -> bool:
+    """True when the profile can give Wi-Fi calling on MTS: one of the two IKE
+    proposals the MTS gateway accepts, the gateway address built from the SIM
+    (or not set) and Wi-Fi calling not switched off without MTS permission."""
+    if not profile.get("path"):
+        return False
+    settings = bundle_settings(str(profile["path"]), board_short(line.get("hardware")))
+    ike = _get(settings, "TechSettings", "IKE")
+    if not isinstance(ike, dict):
+        return False
+
+    def values(value: object) -> list[object]:
+        return list(value) if isinstance(value, (list, tuple)) else [value]
+
+    # A proposal may list several algorithms per field; any combination counts.
+    matches = any(
+        (encryption, integrity, prf, group) in MTS_IKE_PROPOSALS
+        for item in (ike.get("Proposals") or []) if isinstance(item, dict)
+        for encryption in values(item.get("EncryptionAlgorithm"))
+        for integrity in values(item.get("IntegrityAlgorithm"))
+        for prf in values(item.get("PRFAlgorithm"))
+        for group in values(item.get("DHGroup"))
+    )
+    address = str(ike.get("RemoteAddress") or "")
+    allowed = _get(settings, "IMSConfig", "EnableWiFiCallingWithoutEntitlement") is not False
+    return matches and (not address or "$" in address) and allowed
+
+
+def has_modem_file(profile: dict[str, object], line: dict[str, object]) -> bool:
+    """The board override names a modem settings file (DerPriFileName)."""
+    if not profile.get("path"):
+        return False
+    return bool(bundle_settings(str(profile["path"]), board_short(line.get("hardware"))).get("DerPriFileName"))
+
+
+def apn_editable(profile: dict[str, object], line: dict[str, object]) -> tuple[bool, str]:
+    """(can the user change the APN in Settings, internet APN of the profile)."""
+    if not profile.get("path"):
+        return True, ""
+    settings = bundle_settings(str(profile["path"]), board_short(line.get("hardware")))
+    internet = ""
+    for item in settings.get("apns") or []:
+        if isinstance(item, dict) and int(item.get("type-mask") or 0) & 1:
+            internet = str(item.get("apn") or "")
+            break
+    return settings.get("AllowEDGEEditing") is True, internet
+
+
+def choice_warnings(row: dict[str, object], line: dict[str, object]) -> None:
+    """Warnings printed right after a profile is picked.  The plan that follows
+    is confirmed with INSTALL, so the user can still cancel there."""
+    warnings = []
+    if (is_mts_russia(line) and str(row.get("identifier")) != "com.apple.MTS_ru"
+            and not mts_wifi_calling(row, line)):
+        warnings.append(
+            f"С {row['label']} звонков по Wi-Fi на МТС не будет: шлюз МТС принимает только шифры "
+            "AES-128/SHA2-256/DH14 или AES-256/SHA1/DH14, а в этом профиле их нет. "
+            "5G и VoLTE это не касается. Для звонков по Wi-Fi на МТС подходят Vodafone_tr, "
+            "Vodafone_ro и Telia_dk 62.0/68.0."
+        )
+    editable, internet = apn_editable(row, line)
+    if not editable and internet:
+        warnings.append(
+            f"В {row['label']} правка APN недоступна: останется APN профиля «{internet}», "
+            "свой APN оператора прописать не получится. На Билайне интернет с чужим APN работает; "
+            "если у вас не заработает — выберите профиль с правкой APN."
+        )
+    for text in warnings:
+        print("\n  ⚠ " + text)
+    if warnings:
+        print("  Отменить можно на следующем шаге: не вводите INSTALL.")
 
 
 def choose_profile(profiles: list[dict[str, object]], line: dict[str, object]) -> dict[str, object] | None:
     offered = offered_profiles(profiles)
     board = board_short(line.get("hardware")) or "?"
+    operator = operator_name(line)
+    recommended = recommended_rows(offered, line)
+    notes_for = {id(row): note for row, note in recommended}
+    ordered = [row for row, _ in recommended] + [row for row in offered if id(row) not in notes_for]
+    mts = is_mts_russia(line)
     query, page = "", 0
     while True:
-        rows = [row for row in offered if profile_matches_query(row, query)]
+        rows = [row for row in ordered if profile_matches_query(row, query)]
         pages = max(1, (len(rows) + PROFILE_PAGE - 1) // PROFILE_PAGE)
         page = min(page, pages - 1)
         shown = rows[page * PROFILE_PAGE:(page + 1) * PROFILE_PAGE]
@@ -1153,16 +1374,26 @@ def choose_profile(profiles: list[dict[str, object]], line: dict[str, object]) -
         print(f"Только версии с настройками для этого iPhone (плата {board}): "
               f"новейшая версия каждого оператора (и проверенная старая, если есть), "
               f"{len(offered)} из {len(profiles)}.")
+        if recommended:
+            print(f"★ — рекомендуемые для {operator}: они в начале списка, выбирайте по пояснению "
+                  "(подробности — в теме на 4PDA).")
+        if mts:
+            print("Wi-Fi-звонки на МТС дают только профили с пометкой «Wi-Fi-звонки на МТС».")
         print(f"Поиск: {query or 'все'} · найдено {len(rows)} · страница {page + 1}/{pages}")
         for index, row in enumerate(shown, 1):
             notes = []
+            if id(row) in notes_for:
+                notes.append(f"★ {notes_for[id(row)]}")
             if is_active_row(row, line):
                 notes.append("активен")
             if any(str(other["identifier"]) == str(row["identifier"])
                    and _offer_rank(other) > _offer_rank(row) for other in offered):
-                notes.append("проверенная старая версия")
+                notes.append("проверенная старая версия" if row.get("tested", True)
+                             else "старая версия, на iPhone этой модели не проверялась")
             elif row.get("legacy"):
                 notes.append("старая версия")
+            if mts and mts_wifi_calling(row, line):
+                notes.append("Wi-Fi-звонки на МТС")
             if row.get("compatibility"):
                 notes.append(str(row["compatibility"]))
             suffix = " · " + ", ".join(notes) if notes else ""
@@ -1188,6 +1419,7 @@ def choose_profile(profiles: list[dict[str, object]], line: dict[str, object]) -
         elif raw.startswith("/"):
             query, page = raw[1:].strip(), 0
         elif raw.isdigit() and 1 <= int(raw) <= len(shown):
+            choice_warnings(shown[int(raw) - 1], line)
             return shown[int(raw) - 1]
         elif raw.isdigit() and shown:
             print(f"Нет пакета с номером {raw} на этой странице (1–{len(shown)}). "

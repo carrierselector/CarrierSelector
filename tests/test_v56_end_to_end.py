@@ -346,11 +346,15 @@ class EndToEnd(unittest.TestCase):
         self.assertEqual(self.offered("iPhone18,2", "V54AP", "Vodafone ro"), ["Vodafone_ro 73.0 · Vodafone RO"])
         # iPhone 15 Pro: 73.0 has exact D83 settings and is newer.
         self.assertEqual(self.offered("iPhone16,1", "D83AP", "Vodafone ro"), ["Vodafone_ro 73.0"])
-        # v6.1: the newest version of the phone's own firmware comes first; a curated
-        # tested older variant stays available next to it.
-        self.assertEqual(self.offered("iPhone18,2", "V54AP", "Telia dk"), ["Telia_dk 68.0", "Telia_dk 73.0 · Norlys"])
+        # v6.4: within one operator the newest version comes first; curated
+        # tested older variants stay available below it.
+        self.assertEqual(self.offered("iPhone18,2", "V54AP", "Telia dk"), ["Telia_dk 73.0 · Norlys", "Telia_dk 68.0"])
         # iPhone 17 (V57) on iOS 27.2.1: MTN_cy 73.0 is offered, not only the tested 72.0.
-        self.assertEqual(self.offered("iPhone18,3", "V57AP", "MTN cy"), ["MTN_cy 72.0", "MTN_cy 73.0 · epic"])
+        self.assertEqual(self.offered("iPhone18,3", "V57AP", "MTN cy"), ["MTN_cy 73.0 · epic", "MTN_cy 72.0"])
+        # v6.4: Telia_dk 68.0 and 62.0 from iOS 26.3 / 18.3 firmware for iPhone 12, 13 and SE 3.
+        for product, hardware in (("iPhone13,2", "D53gAP"), ("iPhone14,5", "D17AP"), ("iPhone14,6", "D49AP")):
+            self.assertEqual(self.offered(product, hardware, "Telia dk"),
+                             ["Telia_dk 73.0 · Norlys", "Telia_dk 68.0", "Telia_dk 62.0"], product)
         # iPhone 18 Pro Max US: the iOS 27.2.1 Apple set brings exact V64 settings (v5.8).
         self.assertEqual(self.offered("iPhone19,3", "V64AP", "Vodafone ro"), ["Vodafone_ro 73.0 · Vodafone RO"])
         # iPhone 13 now has its own firmware set; an AT&T eSIM bootstrap profile has no D17 settings at all.
@@ -566,9 +570,9 @@ class AlreadyActiveV61(unittest.TestCase):
 
     def test_older_same_operator_over_newer_explains_the_way(self):
         phone = FakePhone(product="iPhone16,1", hardware="D83AP", sims=[sim("kOne", MTS, "com.apple.MTS_ru", "73.0")])
-        result, out = self.run_action(carrier_app.install_interactive, phone, ["MTN cy", "2", "INSTALL"])
+        result, out = self.run_action(carrier_app.install_interactive, phone, ["MTN cy", "1", "INSTALL"])
         self.assertEqual((phone.sims[0].bundle, phone.sims[0].version), ("com.apple.MTN_cy", "73.0"))
-        result, out = self.run_action(carrier_app.install_interactive, phone, ["MTN cy", "1"])
+        result, out = self.run_action(carrier_app.install_interactive, phone, ["MTN cy", "2"])
         self.assertEqual(result, 0, out)
         self.assertIn("MTN_cy 72.0 не ставится", out)
         self.assertIn("сначала верните исходный профиль (пункт 3)", out)
@@ -609,8 +613,8 @@ class V62(unittest.TestCase):
             labels = self.offered(product, hardware, "Telia dk")
             self.assertEqual(len(labels), 1, (product, labels))
             self.assertTrue(labels[0].startswith("Telia_dk 73.0"), (product, labels))
-        # Models that have the curated Telia_dk 68.0 keep it.
-        self.assertEqual(self.offered("iPhone16,1", "D83AP", "Telia dk")[0], "Telia_dk 68.0")
+        # Models that have the curated Telia_dk 68.0 keep it (v6.4: and 62.0 «TELIA»).
+        self.assertEqual(self.offered("iPhone16,1", "D83AP", "Telia dk")[1:], ["Telia_dk 68.0", "Telia_dk 62.0"])
         for family in self.catalog["families"]:
             for donor in family.get("donors", []):
                 self.assertTrue(carrier_app.bundle_path(str(donor["path"])).is_dir(), donor["key"])
@@ -626,9 +630,11 @@ class V62(unittest.TestCase):
     def test_active_mark_only_on_installed_version(self):
         phone = FakePhone(product="iPhone16,1", hardware="D83AP", sims=[sim("kOne", MTS, "com.apple.Telia_dk", "68.0")])
         result, out = self.run_action(carrier_app.install_interactive, phone, ["Telia dk", "Q"])
-        rows = [l for l in out.splitlines() if l.strip().startswith(("1. Telia_dk", "2. Telia_dk"))]
+        search = out[out.index("Поиск: Telia dk"):]  # v6.4: recommended rows also head the full list
+        rows = [l for l in search.splitlines() if l.strip().startswith(("1. Telia_dk", "2. Telia_dk"))]
         self.assertEqual(len(rows), 2, out)
-        self.assertIn("68.0 · активен", rows[0])
+        self.assertIn("Telia_dk 68.0", rows[0])
+        self.assertIn("активен", rows[0])
         self.assertNotIn("активен", rows[1])
         self.assertTrue(carrier_app.is_active_row({"identifier": "x", "version": "1"}, {"bundle_identifier": "x"}))
         self.assertFalse(carrier_app.is_active_row({"identifier": "y", "version": "1"},
@@ -644,7 +650,7 @@ class V62(unittest.TestCase):
                           sims=[sim("kOne", MTS_BY, "com.apple.MTS_by", "73.0"),
                                 sim("kTwo", LIFE_BY, "com.apple.life_by", "73.0")])
         result, out = self.run_action(carrier_app.install_interactive, phone,
-                                      ["1", "Telia dk", "2", "MTN cy", "2", "INSTALL"])
+                                      ["1", "Telia dk", "1", "MTN cy", "1", "INSTALL"])
         self.assertEqual(result, 0, out)
         self.assertNotIn("не России/Беларуси", out)
         self.assertEqual([(s.bundle, s.version) for s in phone.sims],
@@ -940,3 +946,97 @@ class UnitChecks(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class V64Recommendations(unittest.TestCase):
+    """v6.4: recommended profiles per operator, MTS Wi-Fi calling check, APN warning."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.catalog = carrier_app.load_catalog()
+
+    def offered(self, product, hardware):
+        overview = {"product": product, "hardware": hardware}
+        family = carrier_app.matching_family(self.catalog, overview)
+        return carrier_app.offered_profiles(carrier_app.profiles_for(self.catalog, family, overview))
+
+    def labels(self, product, hardware, mcc, mnc):
+        line = {"mcc": mcc, "mnc": mnc, "hardware": hardware}
+        return [row["label"].split(" · ")[0]
+                for row, _ in carrier_app.recommended_rows(self.offered(product, hardware), line)]
+
+    def test_mts_order_vodafone_tr_first(self):
+        self.assertEqual(self.labels("iPhone13,2", "D53gAP", "250", "01"),
+                         ["Vodafone_tr 73.0", "Telia_dk 68.0", "Telia_dk 62.0", "Vodafone_ro 73.0"])
+        # iPhone 18: no Telia_dk 68.0 / 62.0 with MTS ciphers.
+        self.assertEqual(self.labels("iPhone19,2", "V63AP", "250", "1"),
+                         ["Vodafone_tr 73.0", "Vodafone_ro 73.0"])
+        self.assertEqual(carrier_app.operator_name({"mcc": "250", "mnc": "001"}), "МТС")
+
+    def test_beeline_only_profiles_with_board_settings(self):
+        self.assertEqual(self.labels("iPhone18,2", "V54AP", "250", "99"),
+                         ["Ufone_pk 73.0", "MTN_cy 73.0", "movistar_cr 73.0", "Ncell_np 73.0"])
+        # iPhone 16e: Ufone_pk / Ncell_np exist only as a common profile without
+        # the V59 modem file (no 5G) — they must not be recommended.
+        names = self.labels("iPhone17,5", "V59AP", "250", "99")
+        self.assertNotIn("Ufone_pk 73.0", names)
+        self.assertNotIn("Ncell_np 73.0", names)
+        self.assertEqual(names[0], "MTN_cy 73.0")
+
+    def test_mts_wifi_calling_check(self):
+        line = {"mcc": "250", "mnc": "01", "hardware": "D83AP"}
+        rows = {(str(r["identifier"]), str(r["version"])): r for r in self.offered("iPhone16,1", "D83AP")}
+        ok = lambda ident, ver: carrier_app.mts_wifi_calling(rows[(f"com.apple.{ident}", ver)], line)
+        self.assertTrue(ok("Telia_dk", "68.0"))
+        self.assertTrue(ok("Telia_dk", "62.0"))
+        self.assertTrue(ok("Vodafone_tr", "73.0"))
+        self.assertTrue(ok("Vodafone_ro", "73.0"))
+        self.assertFalse(ok("Telia_dk", "73.0"))     # AES-256/SHA2-256
+        self.assertFalse(ok("MTN_cy", "73.0"))       # iOS default proposals
+        self.assertFalse(ok("Vodafone_hu", "73.0"))
+        self.assertFalse(ok("MTS_ru", "73.0"))       # Wi-Fi calling only with MTS permission
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            carrier_app.choice_warnings(rows[("com.apple.MTN_cy", "73.0")], line)
+        self.assertIn("звонков по Wi-Fi на МТС не будет", out.getvalue())
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            carrier_app.choice_warnings(rows[("com.apple.Vodafone_tr", "73.0")], line)
+        self.assertEqual(out.getvalue(), "")
+
+    def test_apn_warning(self):
+        line = {"mcc": "250", "mnc": "99", "hardware": "V54AP"}
+        rows = {str(r["identifier"]): r for r in self.offered("iPhone18,2", "V54AP")}
+        self.assertEqual(carrier_app.apn_editable(rows["com.apple.Ncell_np"], line), (False, "web"))
+        self.assertTrue(carrier_app.apn_editable(rows["com.apple.Ufone_pk"], line)[0])
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            carrier_app.choice_warnings(rows["com.apple.Ncell_np"], line)
+        self.assertIn("правка APN недоступна", out.getvalue())
+
+    def test_belarus_recommendations(self):
+        self.assertEqual(self.labels("iPhone16,1", "D83AP", "257", "04"), ["MTS_ua 73.0"])
+        self.assertEqual(self.labels("iPhone16,1", "D83AP", "257", "02"), ["Telia_dk 73.0"])
+        self.assertEqual(self.labels("iPhone16,1", "D83AP", "257", "01"), [])  # A1: built-in profile
+
+    def test_untested_old_telia_is_not_called_tested(self):
+        phone = FakePhone(product="iPhone13,2", hardware="D53gAP", sims=[sim("kOne", MTS)])
+        output = io.StringIO()
+        with tempfile.TemporaryDirectory() as root, \
+                mock.patch("carrier_app.state_root", return_value=Path(root)), \
+                mock.patch("carrier_app.program_root", return_value=Path(root)), \
+                phone.attached(), mock.patch("builtins.input", side_effect=["Telia dk", "Q"]), \
+                contextlib.redirect_stdout(output):
+            carrier_app.install_interactive(self.catalog)
+        out = output.getvalue()
+        search = out[out.index("Поиск: Telia dk"):]
+        rows = [line for line in search.splitlines() if "Telia_dk 6" in line]
+        self.assertEqual(len(rows), 2, out)
+        for row in rows:
+            self.assertIn("на iPhone этой модели не проверялась", row)
+            self.assertNotIn("проверенная старая версия", row)
+        # Telia_dk 68.0 on iPhone 15 Pro was checked on a real phone.
+        rows15 = [row for row in carrier_app.offered_profiles(carrier_app.profiles_for(
+            self.catalog, carrier_app.matching_family(self.catalog, {"product": "iPhone16,1", "hardware": "D83AP"}),
+            {"product": "iPhone16,1", "hardware": "D83AP"})) if row["label"] == "Telia_dk 68.0"]
+        self.assertTrue(rows15[0].get("tested", True))

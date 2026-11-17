@@ -21,9 +21,9 @@ import urllib.request
 import zipfile
 from pathlib import Path, PurePosixPath
 
-CATALOG_TAG = "catalog-ios27.2.1"
-CATALOG_FILE = "embedded_catalog-ios27.2.1.zip"
-CATALOG_SHA256 = "f6dbfd8bb075f210ee25b9c38b46cb1f57ea4f5c3cb46f99a796054c7f4e4fad"
+CATALOG_TAG = "catalog-ios27.2.1-6.4"
+CATALOG_FILE = "embedded_catalog-ios27.2.1-6.4.zip"
+CATALOG_SHA256 = "35f1c5e84fe5f76d9de95d55e570253fbefe9f123fcda305345848a14ce0fc21"
 CATALOG_URL = (
     "https://github.com/carrierselector/CarrierSelector/releases/download/"
     f"{CATALOG_TAG}/{CATALOG_FILE}"
