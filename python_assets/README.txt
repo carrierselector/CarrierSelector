@@ -1,4 +1,4 @@
-CarrierSelector v.6.1 — версия на чистом Python (macOS, Windows, Linux)
+CarrierSelector v.6.5 — версия на чистом Python (macOS, Windows, Linux)
 =====================================================================
 
 Это та же программа, что и в сборках для macOS, Windows и Linux, но без

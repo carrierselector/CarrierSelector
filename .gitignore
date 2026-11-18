@@ -4,6 +4,7 @@
 # Builds and packaging
 /build*/
 /dist*/
+/out*/
 /release/
 *.zip
 *.7z

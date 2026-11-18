@@ -37,7 +37,7 @@ from tools.read_phone_carrier_state import read_states
 
 
 PROFILE_PAGE = 15
-APP_VERSION = "6.4"
+APP_VERSION = "6.5"
 
 # Waiting limits (seconds).  Module-level so the offline test-suite can shorten them.
 POLL_INTERVAL = 3
@@ -381,7 +381,7 @@ def _supported_devices(directory: Path) -> set[str]:
 def profile_compatibility(directory: Path, overview: dict[str, object] | None) -> tuple[int, str]:
     """Rank a signed bundle without treating a missing board override as rejection."""
     if not overview:
-        return 100, "совместимость платы не проверялась"
+        return 100, "плата iPhone не определена"
     hardware = str(overview.get("hardware", ""))
     short = board_short(hardware)
     product = str(overview.get("product", ""))
@@ -446,14 +446,38 @@ def _all_profile_sources(
     return rows
 
 
+def profile_source_ios(catalog: dict[str, object], row: dict[str, object]) -> str:
+    if row.get("ios"):
+        return str(row["ios"])
+    path = str(row.get("path", ""))
+    root_name = path.split("/")[0] if "/" in path else ""
+    for prefix, release in catalog.get("root_ios", {}).items():
+        if root_name.startswith(prefix):
+            return release
+    if "modern" in path or "73" in str(row.get("key", "")):
+        return "27.2"
+    return ""
+
+
 def profiles_for(
     catalog: dict[str, object], family: dict[str, object] | None,
     overview: dict[str, object] | None = None,
 ) -> list[dict[str, object]]:
     """Return the global signed catalog, preferring the best variant for this board."""
+    phone_ios = _ios_tuple(overview.get("version")) if overview else ()
     unique: dict[tuple[str, str], dict[str, object]] = {}
     for source in _all_profile_sources(catalog, family):
         row = dict(source)
+        source_ios = profile_source_ios(catalog, row)
+        row["ios"] = source_ios
+        if phone_ios and phone_ios < (27, 0):
+            p_ios = _ios_tuple(source_ios)
+            if not p_ios or p_ios >= (27, 0):
+                continue
+            if phone_ios[0] == 26 and p_ios[0] == 26:
+                pass
+            elif p_ios > phone_ios:
+                continue
         directory = bundle_path(str(row["path"]))
         if not row.get("version"):
             try:
@@ -490,13 +514,13 @@ def is_suitable(profile: dict[str, object]) -> bool:
     return int(profile.get("compatibility_score", 0)) != UNSUITABLE_SCORE
 
 
-def _offer_rank(profile: dict[str, object]) -> tuple[int, tuple[int, ...], int]:
+def _offer_rank(profile: dict[str, object]) -> tuple[tuple[int, ...], int, int]:
     try:
         version = version_tuple(profile.get("version"))
     except BuildError:
         version = ()
     curated = 0 if str(profile.get("key", "")).startswith("catalog-") else 1
-    return int(profile.get("compatibility_score", 0)), version, curated
+    return version, int(profile.get("compatibility_score", 0)), curated
 
 
 def offered_profiles(profiles: list[dict[str, object]]) -> list[dict[str, object]]:
@@ -1178,27 +1202,23 @@ RECOMMENDED: dict[str, tuple[tuple[str, str | None, str], ...]] = {
         ("Vodafone_ro", None,
          "имя от сети, SMS по Wi-Fi; конференции через Румынию, нет роуминга и USSD через IMS"),
     ),
+    # Ufone_pk is gone on purpose: Preconditions=None without
+    # RequirePreconditionsWhenMandatory breaks incoming VoLTE calls on Beeline
+    # (SIP logs, 2026-11-18).  Every Beeline entry below rang on a real call.
     "Билайн": (
-        ("Ufone_pk", None, "SMS в LTE и USSD через IMS, SMS по Wi-Fi, правка APN; без HD-голоса EVS"),
-        ("MTN_cy", "73.0", "HD-голос EVS, SMS по Wi-Fi; SMS в LTE и USSD не через IMS, нет переключателя VoLTE"),
-        ("movistar_cr", None, "HD-голос EVS, SMS в LTE и USSD через IMS; APN не правится, не проверен"),
-        ("Ncell_np", None, "HD-голос EVS, SMS в LTE и USSD через IMS; APN «web» не правится"),
+        ("Ncell_np", None, "HD-голос EVS, SMS и USSD через IMS, конференции через Билайн; APN «web» не правится"),
+        ("MobiCom_mn", None, "как Ncell_np: HD-голос EVS, SMS и USSD через IMS; APN «internet» не правится"),
+        ("MTN_cy", None, "HD-голос EVS, правка APN; SMS и USSD не через IMS, нет переключателя VoLTE"),
+        ("Vodafone_hu", None, "HD-голос EVS, правка APN; конференции через Венгрию"),
     ),
     "МегаФон": (
-        ("Ufone_pk", None, "USSD через IMS, правка APN; без HD-голоса EVS, отзывов с МегаФона пока нет"),
-        ("MTN_cy", "73.0", "HD-голос EVS; много отзывов"),
+        ("MTN_cy", None, "HD-голос EVS, правка APN; много отзывов"),
         ("Ncell_np", None, "HD-голос EVS, USSD через IMS; APN «web» не правится"),
     ),
-    "T2": (
-        ("MTN_cy", "73.0", "5G и VoLTE по отзывам"),
-        ("Ufone_pk", None, "не проверялся; должен работать как MTN_cy"),
-    ),
-    "Yota": (
-        ("MTN_cy", "73.0", "отзывов пока мало"),
-        ("Ufone_pk", None, "не проверялся; должен работать как MTN_cy"),
-    ),
-    "МТС BY": (("Telia_dk", "73.0", "5G, VoLTE и HD-голос EVS, конференции через МТС BY"),),
-    "life:)": (("MTS_ua", "73.0", "5G; VoLTE у life официально не запущен"),),
+    "T2": (("MTN_cy", None, "5G и VoLTE, правка APN"),),
+    "Yota": (("MTN_cy", None, "сеть МегаФона: HD-голос EVS, правка APN"),),
+    "МТС BY": (("Telia_dk", None, "5G, VoLTE и HD-голос EVS, конференции через МТС BY"),),
+    "life:)": (("MTS_ua", None, "5G; VoLTE у life официально не запущен"),),
 }
 
 
@@ -1331,6 +1351,20 @@ def apn_editable(profile: dict[str, object], line: dict[str, object]) -> tuple[b
     return settings.get("AllowEDGEEditing") is True, internet
 
 
+def breaks_beeline_incoming(profile: dict[str, object], line: dict[str, object]) -> bool:
+    """True when the profile sets IMS Signaling Preconditions to 'None' without
+    defining RequirePreconditionsWhenMandatory. On Beeline (250-99), incoming
+    calls fail with BYE cause 127 because iPhone answers 183 Require: precondition
+    without preconditions in SDP (tested on real iPhone 17 Pro Max, 2026-11-18)."""
+    if not profile.get("path"):
+        return False
+    settings = bundle_settings(str(profile["path"]), board_short(line.get("hardware")))
+    sig = _get(settings, "IMSConfig", "Signaling")
+    if not isinstance(sig, dict):
+        return False
+    return sig.get("Preconditions") == "None" and "RequirePreconditionsWhenMandatory" not in sig
+
+
 def choice_warnings(row: dict[str, object], line: dict[str, object]) -> None:
     """Warnings printed right after a profile is picked.  The plan that follows
     is confirmed with INSTALL, so the user can still cancel there."""
@@ -1342,6 +1376,11 @@ def choice_warnings(row: dict[str, object], line: dict[str, object]) -> None:
             "AES-128/SHA2-256/DH14 или AES-256/SHA1/DH14, а в этом профиле их нет. "
             "5G и VoLTE это не касается. Для звонков по Wi-Fi на МТС подходят Vodafone_tr, "
             "Vodafone_ro и Telia_dk 62.0/68.0."
+        )
+    if operator_name(line) == "Билайн" and breaks_beeline_incoming(row, line):
+        warnings.append(
+            "С этим профилем входящие звонки на Билайне не проходят: звонящий слышит "
+            "„абонент недоступен“. Выберите профиль с пометкой ★."
         )
     editable, internet = apn_editable(row, line)
     if not editable and internet:
@@ -1388,8 +1427,7 @@ def choose_profile(profiles: list[dict[str, object]], line: dict[str, object]) -
                 notes.append("активен")
             if any(str(other["identifier"]) == str(row["identifier"])
                    and _offer_rank(other) > _offer_rank(row) for other in offered):
-                notes.append("проверенная старая версия" if row.get("tested", True)
-                             else "старая версия, на iPhone этой модели не проверялась")
+                notes.append("проверенная старая версия" if row.get("tested", True) else "старая версия")
             elif row.get("legacy"):
                 notes.append("старая версия")
             if mts and mts_wifi_calling(row, line):
@@ -2078,7 +2116,15 @@ def native_profile(catalog: dict[str, object], line: dict[str, object]) -> dict[
     if not family or not mcc.isdigit() or not mnc.isdigit():
         return None
     codes = list(dict.fromkeys([mcc + mnc, mcc + mnc.zfill(2), mcc + mnc.zfill(3)]))
-    for root in [family.get("catalog_root", "")] + list(family.get("extra_roots", [])):
+    phone_ios = _ios_tuple(line.get("version"))
+    tags = catalog.get("root_ios", {})
+    roots = [family.get("catalog_root", "")] + list(family.get("extra_roots", []))
+    if phone_ios:
+        def root_sort(r: object) -> tuple[bool, tuple[int, ...]]:
+            ios = next((_ios_tuple(release) for prefix, release in tags.items() if str(r).startswith(prefix)), (27, 2))
+            return (ios <= phone_ios, ios)
+        roots = sorted(roots, key=root_sort, reverse=True)
+    for root in roots:
         if not root:
             continue
         index = _native_index(str(root))

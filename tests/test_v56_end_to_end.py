@@ -974,14 +974,19 @@ class V64Recommendations(unittest.TestCase):
         self.assertEqual(carrier_app.operator_name({"mcc": "250", "mnc": "001"}), "МТС")
 
     def test_beeline_only_profiles_with_board_settings(self):
+        # v6.5: Ufone_pk is not recommended (incoming VoLTE calls fail on Beeline:
+        # Preconditions=None without RequirePreconditionsWhenMandatory).
         self.assertEqual(self.labels("iPhone18,2", "V54AP", "250", "99"),
-                         ["Ufone_pk 73.0", "MTN_cy 73.0", "movistar_cr 73.0", "Ncell_np 73.0"])
-        # iPhone 16e: Ufone_pk / Ncell_np exist only as a common profile without
+                         ["Ncell_np 73.0", "MobiCom_mn 73.0", "MTN_cy 73.0", "Vodafone_hu 73.0"])
+        # iPhone 16e: Ncell_np / MobiCom_mn exist only as a common profile without
         # the V59 modem file (no 5G) — they must not be recommended.
         names = self.labels("iPhone17,5", "V59AP", "250", "99")
-        self.assertNotIn("Ufone_pk 73.0", names)
         self.assertNotIn("Ncell_np 73.0", names)
+        self.assertNotIn("MobiCom_mn 73.0", names)
+        self.assertNotIn("Ufone_pk 73.0", names)
         self.assertEqual(names[0], "MTN_cy 73.0")
+        for operator in (("250", "02"), ("250", "20"), ("250", "11")):
+            self.assertNotIn("Ufone_pk 73.0", self.labels("iPhone18,2", "V54AP", *operator))
 
     def test_mts_wifi_calling_check(self):
         line = {"mcc": "250", "mnc": "01", "hardware": "D83AP"}
@@ -1033,10 +1038,82 @@ class V64Recommendations(unittest.TestCase):
         rows = [line for line in search.splitlines() if "Telia_dk 6" in line]
         self.assertEqual(len(rows), 2, out)
         for row in rows:
-            self.assertIn("на iPhone этой модели не проверялась", row)
+            self.assertIn("старая версия", row)
+            self.assertNotIn("не проверял", row)  # v6.5: no "not tested" remarks
             self.assertNotIn("проверенная старая версия", row)
         # Telia_dk 68.0 on iPhone 15 Pro was checked on a real phone.
         rows15 = [row for row in carrier_app.offered_profiles(carrier_app.profiles_for(
             self.catalog, carrier_app.matching_family(self.catalog, {"product": "iPhone16,1", "hardware": "D83AP"}),
             {"product": "iPhone16,1", "hardware": "D83AP"})) if row["label"] == "Telia_dk 68.0"]
         self.assertTrue(rows15[0].get("tested", True))
+
+
+class V65Ios26Support(unittest.TestCase):
+    """v6.5: iOS 26 support (26.6-26.7), 70.0 rollback, Beeline incoming warning."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.catalog = carrier_app.load_catalog()
+
+    def test_ios26_models_offer_70_and_find_rollback(self):
+        models = [
+            ("iPhone16,1", "D83AP", "iPhone 15 Pro"),
+            ("iPhone13,2", "D53gAP", "iPhone 12"),
+            ("iPhone18,2", "V54AP", "iPhone 17 Pro Max"),
+        ]
+        for product, hardware, name in models:
+            for ver in ("26.6.2", "26.7.3"):
+                state = {"mcc": "250", "mnc": "99", "product": product, "hardware": hardware, "version": ver}
+                family = carrier_app.matching_family(self.catalog, state)
+                profs = carrier_app.profiles_for(self.catalog, family, state)
+                offered = carrier_app.offered_profiles(profs)
+
+                # None of the offered profiles should be >= 72.0
+                bad = [p["label"] for p in offered if p.get("version") and carrier_app.version_tuple(p.get("version")) >= (72, 0)]
+                self.assertEqual(bad, [], f"{name} on iOS {ver} offers >= 72.x profiles")
+
+                # Native firmware version must be 70.0
+                self.assertEqual(carrier_app.native_firmware_version(state, "com.apple.VimpelCom_ru"), "70.0")
+
+                # Rollback package VimpelCom_ru 70.0 must be found
+                original = {"bundle_identifier": "com.apple.VimpelCom_ru", "bundle_version": "70.0"}
+                rollback = carrier_app.exact_profile(profs, original)
+                self.assertIsNotNone(rollback, f"rollback VimpelCom_ru 70.0 not found for {name} on iOS {ver}")
+                self.assertEqual(str(rollback.get("version")), "70.0")
+
+                # Beeline recommendations must be 70.0
+                recs = carrier_app.recommended_rows(offered, state)
+                self.assertEqual(len(recs), 4, f"expected 4 recommendations for {name} on iOS {ver}")
+                rec_labels = [r["label"].split(" · ")[0] for r, _ in recs]
+                self.assertEqual(rec_labels, ["Ncell_np 70.0", "MobiCom_mn 70.0", "MTN_cy 70.0", "Vodafone_hu 70.0"])
+
+    def test_beeline_incoming_call_warning(self):
+        line = {"mcc": "250", "mnc": "99", "hardware": "V54AP", "product": "iPhone18,2"}
+        overview = {"product": "iPhone18,2", "hardware": "V54AP"}
+        family = carrier_app.matching_family(self.catalog, overview)
+        profs = {f"{str(p.get('identifier')).removeprefix('com.apple.')} {p.get('version')}": p
+                 for p in carrier_app.profiles_for(self.catalog, family, overview)}
+
+        # breaks_beeline_incoming True for Ufone_pk 73.0 and Algar_br 73.0
+        self.assertTrue(carrier_app.breaks_beeline_incoming(profs["Ufone_pk 73.0"], line))
+        self.assertTrue(carrier_app.breaks_beeline_incoming(profs["Algar_br 73.0"], line))
+
+        # breaks_beeline_incoming False for Ncell_np 73.0, MTN_cy 73.0, Vodafone_hu 73.0
+        self.assertFalse(carrier_app.breaks_beeline_incoming(profs["Ncell_np 73.0"], line))
+        self.assertFalse(carrier_app.breaks_beeline_incoming(profs["MTN_cy 73.0"], line))
+        self.assertFalse(carrier_app.breaks_beeline_incoming(profs["Vodafone_hu 73.0"], line))
+
+        # Warning is emitted by choice_warnings for Ufone_pk and Algar_br
+        for key in ("Ufone_pk 73.0", "Algar_br 73.0"):
+            out = io.StringIO()
+            with contextlib.redirect_stdout(out):
+                carrier_app.choice_warnings(profs[key], line)
+            self.assertIn("входящие звонки на Билайне не проходят", out.getvalue())
+
+        # No warning emitted for recommended profiles
+        for key in ("Ncell_np 73.0", "MTN_cy 73.0", "Vodafone_hu 73.0"):
+            out = io.StringIO()
+            with contextlib.redirect_stdout(out):
+                carrier_app.choice_warnings(profs[key], line)
+            self.assertNotIn("входящие звонки на Билайне не проходят", out.getvalue())
+
