@@ -37,7 +37,7 @@ from tools.read_phone_carrier_state import read_states
 
 
 PROFILE_PAGE = 15
-APP_VERSION = "6.5"
+APP_VERSION = "6.5.1"
 
 # Waiting limits (seconds).  Module-level so the offline test-suite can shorten them.
 POLL_INTERVAL = 3
@@ -470,6 +470,11 @@ def profiles_for(
         row = dict(source)
         source_ios = profile_source_ios(catalog, row)
         row["ios"] = source_ios
+        if (not source.get("ios") and _ios_tuple(source_ios) and _ios_tuple(source_ios) < (27, 0)
+                and not (phone_ios and phone_ios < (27, 0))):
+            # Full iOS 26 sets exist only for phones on iOS 26; on iOS 27 their
+            # board-specific 70.0 files must not outrank the current 72.x/73.x.
+            continue
         if phone_ios and phone_ios < (27, 0):
             p_ios = _ios_tuple(source_ios)
             if not p_ios or p_ios >= (27, 0):
@@ -514,13 +519,13 @@ def is_suitable(profile: dict[str, object]) -> bool:
     return int(profile.get("compatibility_score", 0)) != UNSUITABLE_SCORE
 
 
-def _offer_rank(profile: dict[str, object]) -> tuple[tuple[int, ...], int, int]:
+def _offer_rank(profile: dict[str, object]) -> tuple[int, tuple[int, ...], int]:
     try:
         version = version_tuple(profile.get("version"))
     except BuildError:
         version = ()
     curated = 0 if str(profile.get("key", "")).startswith("catalog-") else 1
-    return version, int(profile.get("compatibility_score", 0)), curated
+    return int(profile.get("compatibility_score", 0)), version, curated
 
 
 def offered_profiles(profiles: list[dict[str, object]]) -> list[dict[str, object]]:
@@ -1969,11 +1974,26 @@ def confirm_plan(
     ))
 
 
+MIN_SUPPORTED_IOS = (26, 6)
+
+
+def require_supported_ios(overview: dict[str, object]) -> None:
+    """Profiles and rollback packages exist only for iOS 26.6 and later."""
+    phone_ios = _ios_tuple(overview.get("version"))
+    if phone_ios and phone_ios < MIN_SUPPORTED_IOS:
+        raise BuildError(
+            f"на этом iPhone iOS {overview.get('version')}, а программа работает с iOS 26.6 и новее. "
+            "Для более старой iOS в программе нет профилей и исходного пакета для отката. "
+            "Обновите iOS до 26.6 или новее и запустите установку снова; телефон не изменён"
+        )
+
+
 def install_interactive(catalog: dict[str, object], *, both: bool = False) -> int:
     overview = asyncio.run(read_states())
     log_overview(overview)
     family, lines = show_phone(overview, catalog)
     require_model(overview)
+    require_supported_ios(overview)
     print("Подбираю профили для этой модели…", flush=True)
     profiles = profiles_for(catalog, family, overview)
     usable = [line for line in lines if valid_line(line)]

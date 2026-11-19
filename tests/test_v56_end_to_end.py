@@ -1117,3 +1117,39 @@ class V65Ios26Support(unittest.TestCase):
                 carrier_app.choice_warnings(profs[key], line)
             self.assertNotIn("входящие звонки на Билайне не проходят", out.getvalue())
 
+
+
+class V651Fixes(unittest.TestCase):
+    """v6.5.1: iOS 26 sets never outrank iOS 27 ones; clear message below iOS 26.6."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.catalog = carrier_app.load_catalog()
+
+    def offered(self, product, hardware, version):
+        state = {"product": product, "hardware": hardware, "version": version}
+        family = carrier_app.matching_family(self.catalog, state)
+        return carrier_app.offered_profiles(carrier_app.profiles_for(self.catalog, family, state))
+
+    def test_ios27_offers_no_ios26_profiles(self):
+        for product, hardware in (("iPhone16,1", "D83AP"), ("iPhone13,2", "D53gAP"), ("iPhone18,2", "V54AP")):
+            for version in ("27.2.1", "27.0.1", "27.3"):
+                old = [row["label"] for row in self.offered(product, hardware, version)
+                       if str(row.get("ios", "")).startswith("26.")
+                       and str(row.get("key", "")).startswith("catalog-")]
+                self.assertEqual(old, [], f"{product} iOS {version}")
+
+    def test_iphone18_keeps_exact_board_version(self):
+        rows = {str(row["identifier"]): row for row in self.offered("iPhone19,2", "V63AP", "27.2.1")}
+        for name in ("Smartfren_id", "Unitel_mn"):
+            row = rows[f"com.apple.{name}"]
+            self.assertEqual(int(row["compatibility_score"]), 400, name)
+            self.assertEqual(str(row["version"]), "72.0", name)
+
+    def test_old_ios_gets_clear_message(self):
+        for version in ("26.5.1", "26.0", "18.6"):
+            with self.assertRaises(carrier_app.BuildError) as ctx:
+                carrier_app.require_supported_ios({"version": version})
+            self.assertIn("Обновите iOS до 26.6", str(ctx.exception))
+        for version in ("26.6", "26.7.3", "27.2.1", None):
+            carrier_app.require_supported_ios({"version": version})
